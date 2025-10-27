@@ -1,0 +1,172 @@
+name: Build Archiso Weekly
+
+on:
+  schedule:
+    - cron: '0 0 * * 0'  # Every Sunday at midnight UTC
+  workflow_dispatch:  # Manual trigger
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      options: --privileged
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get current date
+        id: date
+        run: |
+          echo "date=$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
+          echo "week=$(date +'%Y.%U')" >> $GITHUB_OUTPUT
+
+      - name: Setup pacman cache
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/pacman/pkg
+          key: archiso-pacman-${{ github.run_number }}-${{ steps.date.outputs.week }}
+          restore-keys: |
+            archiso-pacman-${{ github.run_number }}-
+            archiso-pacman-
+
+      - name: Configure pacman and makepkg for optimal performance
+        run: |
+          sed -i 's/#ParallelDownloads = 5/ParallelDownloads = 10/' /etc/pacman.conf
+          sed -i 's/#Color/Color/' /etc/pacman.conf
+          echo 'MAKEFLAGS="-j$(nproc)"' >> /etc/makepkg.conf
+          sed -i "s/OPTIONS=(.*)/OPTIONS=(strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto)/" /etc/makepkg.conf
+
+      - name: Setup fastest mirrors
+        run: |
+          pacman -Sy --noconfirm reflector
+          reflector --verbose --latest 10 --protocol https --sort rate --save /etc/pacman.d/mirrorlist
+          cat /etc/pacman.d/mirrorlist
+
+      - name: Initialize keyring and update system
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Syyu --noconfirm archlinux-keyring
+
+      - name: Install archiso and build tools
+        run: |
+          pacman -S --noconfirm archiso ccache squashfs-tools
+
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: archiso-ccache-${{ steps.date.outputs.week }}
+          restore-keys: |
+            archiso-ccache-
+
+      - name: Setup build workspace
+        run: |
+          mkdir -p /tmp/archiso-work /tmp/out
+          export CCACHE_DIR=~/.ccache
+          ccache -M 2G
+
+      - name: Prepare archiso releng profile with optimizations
+        run: |
+          cp -r /usr/share/archiso/configs/releng /tmp/archiso
+          sed -i '/edk2-shell/d' /tmp/archiso/packages.x86_64
+          sed -i "s/bootmodes=.*/bootmodes=('uefi-x64.systemd-boot.esp')/" /tmp/archiso/profiledef.sh
+          sed -i "s/airootfs_image_tool_options=.*/airootfs_image_tool_options=('-comp' 'zstd' '-Xcompression-level' '10' '-b' '1M' '-processors' '4')/" /tmp/archiso/profiledef.sh
+
+      - name: Build ISO with optimizations
+        run: |
+          export CCACHE_DIR=~/.ccache
+          cd /tmp
+          mkarchiso -v -w /tmp/archiso-work -o /tmp/out /tmp/archiso
+
+      - name: Generate checksums
+        run: |
+          cd /tmp/out
+          ISO_FILE=$(ls archlinux-*.iso)
+          sha256sum "$ISO_FILE" > "$ISO_FILE.sha256"
+          sha512sum "$ISO_FILE" > "$ISO_FILE.sha512"
+          echo "ISO_NAME=$ISO_FILE" >> $GITHUB_ENV
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: archlinux-${{ steps.date.outputs.date }}-x86_64
+          path: |
+            /tmp/out/*.iso
+            /tmp/out/*.sha256
+            /tmp/out/*.sha512
+          retention-days: 30
+          compression-level: 6
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.date.outputs.date }}
+          name: Arch Linux ISO ${{ steps.date.outputs.date }}
+          body: |
+            ## Arch Linux Live ISO - Weekly Build
+            
+            **Build Date:** ${{ steps.date.outputs.date }}
+            **Profile:** releng (official)
+            **Architecture:** x86_64
+            
+            ### Included Packages
+            This ISO includes the official Arch Linux releng profile with ~130 packages:
+            - Base system (base, linux, linux-firmware)
+            - Installation tools (archinstall, gpart, gparted)
+            - Networking (networkmanager, openssh, wireless_tools, wpa_supplicant)
+            - Filesystems (btrfs-progs, dosfstools, e2fsprogs, f2fs-tools, ntfs-3g, xfsprogs)
+            - System utilities (git, vim, nano, tmux, screen, htop)
+            - Hardware support (amd-ucode, intel-ucode, nvme-cli, smartmontools)
+            - Web browsers (elinks, lynx)
+            - And more...
+            
+            ### Verification
+            ```bash
+            # Verify SHA256
+            sha256sum -c archlinux-${{ steps.date.outputs.date }}-x86_64.iso.sha256
+            
+            # Verify SHA512
+            sha512sum -c archlinux-${{ steps.date.outputs.date }}-x86_64.iso.sha512
+            ```
+            
+            ### Usage
+            ```bash
+            # Write to USB (Linux)
+            sudo dd if=archlinux-${{ steps.date.outputs.date }}-x86_64.iso of=/dev/sdX bs=4M status=progress && sync
+            
+            # Or use balenaEtcher, Rufus (Windows), or similar tools
+            ```
+          files: |
+            /tmp/out/*.iso
+            /tmp/out/*.sha256
+            /tmp/out/*.sha512
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build summary
+        run: |
+          cd /tmp/out
+          ISO_FILE=$(ls archlinux-*.iso)
+          ISO_SIZE=$(du -h "$ISO_FILE" | cut -f1)
+          echo "### Build Complete! 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**ISO:** $ISO_FILE" >> $GITHUB_STEP_SUMMARY
+          echo "**Size:** $ISO_SIZE" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** ${{ steps.date.outputs.date }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Checksums" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat "$ISO_FILE.sha256" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
