@@ -1,0 +1,172 @@
+name: Build Plasma ISO (Manual)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+      options: --privileged
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
+
+      - name: Setup pacman cache
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/pacman/pkg
+          key: plasma-pacman-${{ steps.date.outputs.date }}
+          restore-keys: |
+            plasma-pacman-
+
+      - name: Configure pacman for optimal performance
+        run: |
+          sed -i 's/#ParallelDownloads = 5/ParallelDownloads = 5/' /etc/pacman.conf
+          sed -i 's/#Color/Color/' /etc/pacman.conf
+
+      - name: Initialize Arch keyring and update system
+        run: |
+          pacman-key --init
+          pacman-key --populate archlinux
+          pacman -Sy --noconfirm archlinux-keyring
+          pacman -Syu --noconfirm
+
+      - name: Install archiso and dependencies
+        run: |
+          pacman -S --noconfirm archiso git
+
+      - name: Prepare custom profile
+        run: |
+          cp -r configs/plasma /tmp/plasma-profile
+          chmod +x /tmp/plasma-profile/airootfs/root/.automated_script.sh
+
+      - name: Build Plasma ISO
+        run: |
+          cd /tmp
+          mkarchiso -v -w /tmp/archiso-work -o /tmp/out /tmp/plasma-profile
+
+      - name: Generate checksums
+        run: |
+          cd /tmp/out
+          ISO_FILE=$(ls archlinux-plasma-*.iso)
+          sha256sum "$ISO_FILE" > "$ISO_FILE.sha256"
+          sha512sum "$ISO_FILE" > "$ISO_FILE.sha512"
+          echo "ISO_NAME=$ISO_FILE" >> $GITHUB_ENV
+
+      - name: Upload ISO artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: archlinux-plasma-${{ steps.date.outputs.date }}-x86_64
+          path: |
+            /tmp/out/*.iso
+            /tmp/out/*.sha256
+            /tmp/out/*.sha512
+          retention-days: 90
+          compression-level: 9
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: plasma-v${{ steps.date.outputs.date }}
+          name: Arch Linux Plasma ISO ${{ steps.date.outputs.date }}
+          body: |
+            ## Arch Linux Live ISO with KDE Plasma Desktop
+            
+            **Build Date:** ${{ steps.date.outputs.date }}
+            **Profile:** Custom Plasma Desktop
+            **Architecture:** x86_64
+            **Size:** ~3.5 GB
+            
+            ### Features
+            - **Full KDE Plasma Desktop** with Wayland and X11 support
+            - **Auto-login** to graphical environment (user: liveuser, no password)
+            - **Complete application suite:**
+              - Browsers: Firefox, Chromium
+              - File Manager: Dolphin with plugins
+              - Terminal: Konsole, Yakuake
+              - Editors: Kate, Vim, Nano
+              - System Tools: GParted, Partition Manager, htop
+              - Media: VLC, Gwenview, Elisa
+              - Archive tools: Ark, p7zip, unrar
+            - **Installation tools:** archinstall, gparted, partitionmanager
+            - **Hardware support:** AMD/Intel microcode, full driver suite
+            - **Network ready:** NetworkManager with GUI, WiFi support
+            - **Audio:** PipeWire with PulseAudio compatibility
+            
+            ### Included Packages
+            ~300+ packages including:
+            - Base system + development tools
+            - Full Plasma desktop environment
+            - All KDE applications (Dolphin, Konsole, Kate, Okular, Gwenview, etc.)
+            - Web browsers and productivity tools
+            - Complete filesystem support (btrfs, xfs, ntfs, f2fs, ext4)
+            - System utilities and diagnostic tools
+            
+            ### Usage
+            Boot into a full graphical desktop environment - perfect for:
+            - Installing Arch with GUI tools
+            - System rescue with full desktop access
+            - Hardware testing and diagnostics
+            - Temporary work environment
+            
+            ### Verification
+            ```bash
+            # Verify SHA256
+            sha256sum -c archlinux-plasma-${{ steps.date.outputs.date }}-x86_64.iso.sha256
+            
+            # Verify SHA512
+            sha512sum -c archlinux-plasma-${{ steps.date.outputs.date }}-x86_64.iso.sha512
+            ```
+            
+            ### Write to USB
+            ```bash
+            # Linux
+            sudo dd if=archlinux-plasma-${{ steps.date.outputs.date }}-x86_64.iso of=/dev/sdX bs=4M status=progress && sync
+            
+            # Or use balenaEtcher, Rufus (Windows), or similar tools
+            ```
+            
+            ### System Requirements
+            - **RAM:** 2GB minimum, 4GB recommended
+            - **Storage:** 8GB USB drive or larger
+            - **Boot:** UEFI or Legacy BIOS support
+          files: |
+            /tmp/out/*.iso
+            /tmp/out/*.sha256
+            /tmp/out/*.sha512
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build summary
+        run: |
+          cd /tmp/out
+          ISO_FILE=$(ls archlinux-plasma-*.iso)
+          ISO_SIZE=$(du -h "$ISO_FILE" | cut -f1)
+          echo "### Plasma ISO Build Complete! 🎉" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**ISO:** $ISO_FILE" >> $GITHUB_STEP_SUMMARY
+          echo "**Size:** $ISO_SIZE" >> $GITHUB_STEP_SUMMARY
+          echo "**Date:** ${{ steps.date.outputs.date }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Features" >> $GITHUB_STEP_SUMMARY
+          echo "- Full KDE Plasma Desktop with auto-login" >> $GITHUB_STEP_SUMMARY
+          echo "- Wayland and X11 support" >> $GITHUB_STEP_SUMMARY
+          echo "- Complete application suite" >> $GITHUB_STEP_SUMMARY
+          echo "- ~300+ packages installed" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "#### Checksums" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat "$ISO_FILE.sha256" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
