@@ -3,6 +3,10 @@ name: Build Plasma ISO (Manual)
 on:
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: write
 
@@ -19,45 +23,65 @@ jobs:
 
       - name: Get current date
         id: date
-        run: echo "date=$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
+        run: |
+          echo "date=$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
+          echo "week=$(date +'%Y.%U')" >> $GITHUB_OUTPUT
 
       - name: Setup pacman cache
         uses: actions/cache@v4
         with:
           path: /var/cache/pacman/pkg
-          key: plasma-pacman-${{ steps.date.outputs.date }}
+          key: plasma-pacman-${{ github.run_number }}-${{ steps.date.outputs.week }}
           restore-keys: |
+            plasma-pacman-${{ github.run_number }}-
             plasma-pacman-
 
-      - name: Configure pacman for optimal performance
+      - name: Configure pacman and makepkg for optimal performance
         run: |
-          sed -i 's/#ParallelDownloads = 5/ParallelDownloads = 5/' /etc/pacman.conf
+          sed -i 's/#ParallelDownloads = 5/ParallelDownloads = 10/' /etc/pacman.conf
           sed -i 's/#Color/Color/' /etc/pacman.conf
+          echo 'MAKEFLAGS="-j$(nproc)"' >> /etc/makepkg.conf
+          sed -i "s/OPTIONS=(.*)/OPTIONS=(strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto)/" /etc/makepkg.conf
 
-      - name: Initialize Arch keyring and update system
+      - name: Setup fastest mirrors
+        run: |
+          pacman -Sy --noconfirm reflector
+          reflector --verbose --latest 10 --protocol https --sort rate --save /etc/pacman.d/mirrorlist
+          cat /etc/pacman.d/mirrorlist
+
+      - name: Initialize keyring and update system
         run: |
           pacman-key --init
           pacman-key --populate archlinux
-          pacman -Sy --noconfirm archlinux-keyring
-          pacman -Syu --noconfirm
+          pacman -Syyu --noconfirm archlinux-keyring
 
-      - name: Install archiso and dependencies
+      - name: Install archiso and build tools
         run: |
-          pacman -S --noconfirm archiso git
+          pacman -S --noconfirm archiso ccache squashfs-tools
 
-      - name: Prepare custom profile
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: plasma-ccache-${{ steps.date.outputs.week }}
+          restore-keys: |
+            plasma-ccache-
+
+      - name: Setup build workspace
         run: |
-          cp -r /usr/share/archiso/configs/releng /tmp/plasma-profile
-          cp configs/plasma/packages.x86_64 /tmp/plasma-profile/
-          cp configs/plasma/profiledef.sh /tmp/plasma-profile/
-          cp -r configs/plasma/airootfs/* /tmp/plasma-profile/airootfs/
+          mkdir -p /tmp/archiso-work /tmp/out
+          export CCACHE_DIR=~/.ccache
+          ccache -M 2G
+
+      - name: Prepare custom profile with optimizations
+        run: |
+          cp -r configs/plasma /tmp/plasma-profile
           chmod +x /tmp/plasma-profile/airootfs/root/.automated_script.sh
-          chmod +x /tmp/plasma-profile/airootfs/etc/profile.d/plasma-autostart.sh
-          echo "Profile prepared. Contents:"
-          ls -la /tmp/plasma-profile/
+          sed -i '/edk2-shell/d' /tmp/plasma-profile/packages.x86_64
 
-      - name: Build Plasma ISO
+      - name: Build Plasma ISO with optimizations
         run: |
+          export CCACHE_DIR=~/.ccache
           cd /tmp
           mkarchiso -v -w /tmp/archiso-work -o /tmp/out /tmp/plasma-profile
 
@@ -77,8 +101,8 @@ jobs:
             /tmp/out/*.iso
             /tmp/out/*.sha256
             /tmp/out/*.sha512
-          retention-days: 90
-          compression-level: 9
+          retention-days: 30
+          compression-level: 6
 
       - name: Create release
         uses: softprops/action-gh-release@v2
@@ -94,8 +118,8 @@ jobs:
             **Size:** ~3.5 GB
             
             ### Features
-            - **Full KDE Plasma Desktop** with native Wayland support and X11 fallback
-            - **Auto-login** to Plasma Wayland session (user: liveuser, no password)
+            - **Full KDE Plasma Desktop** with Wayland and X11 support
+            - **Auto-login** to graphical environment (user: liveuser, no password)
             - **Complete application suite:**
               - Browsers: Firefox, Chromium
               - File Manager: Dolphin with plugins
@@ -145,7 +169,7 @@ jobs:
             ### System Requirements
             - **RAM:** 2GB minimum, 4GB recommended
             - **Storage:** 8GB USB drive or larger
-            - **Boot:** UEFI (64-bit) required
+            - **Boot:** UEFI or Legacy BIOS support
           files: |
             /tmp/out/*.iso
             /tmp/out/*.sha256
