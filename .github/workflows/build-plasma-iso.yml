@@ -23,25 +23,21 @@ jobs:
 
       - name: Get current date
         id: date
-        run: |
-          echo "date=$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
-          echo "week=$(date +'%Y.%U')" >> $GITHUB_OUTPUT
+        run: echo "date=$(date +'%Y.%m.%d')" >> $GITHUB_OUTPUT
 
       - name: Setup pacman cache
         uses: actions/cache@v4
         with:
           path: /var/cache/pacman/pkg
-          key: plasma-pacman-${{ github.run_number }}-${{ steps.date.outputs.week }}
+          key: plasma-pacman-${{ runner.os }}-${{ hashFiles('configs/plasma/packages.x86_64', 'configs/plasma/pacman.conf', 'configs/plasma/profiledef.sh') }}
           restore-keys: |
-            plasma-pacman-${{ github.run_number }}-
+            plasma-pacman-${{ runner.os }}-
             plasma-pacman-
 
-      - name: Configure pacman and makepkg for optimal performance
+      - name: Configure pacman for optimal performance
         run: |
           sed -i 's/#ParallelDownloads = 5/ParallelDownloads = 10/' /etc/pacman.conf
           sed -i 's/#Color/Color/' /etc/pacman.conf
-          echo 'MAKEFLAGS="-j$(nproc)"' >> /etc/makepkg.conf
-          sed -i "s/OPTIONS=(.*)/OPTIONS=(strip docs !libtool !staticlibs emptydirs zipman purge !debug !lto)/" /etc/makepkg.conf
 
       - name: Setup fastest mirrors
         run: |
@@ -57,21 +53,11 @@ jobs:
 
       - name: Install archiso and build tools
         run: |
-          pacman -S --noconfirm archiso ccache squashfs-tools
-
-      - name: Setup ccache
-        uses: actions/cache@v4
-        with:
-          path: ~/.ccache
-          key: plasma-ccache-${{ steps.date.outputs.week }}
-          restore-keys: |
-            plasma-ccache-
+          pacman -S --needed --noconfirm archiso squashfs-tools
 
       - name: Setup build workspace
         run: |
           mkdir -p /tmp/archiso-work /tmp/out
-          export CCACHE_DIR=~/.ccache
-          ccache -M 2G
 
       - name: Prepare custom profile with optimizations
         run: |
@@ -81,7 +67,6 @@ jobs:
 
       - name: Build Plasma ISO with optimizations
         run: |
-          export CCACHE_DIR=~/.ccache
           cd /tmp
           mkarchiso -v -w /tmp/archiso-work -o /tmp/out /tmp/plasma-profile
 

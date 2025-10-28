@@ -27,8 +27,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: /var/cache/pacman/pkg
-          key: archiso-pacman-${{ steps.date.outputs.date }}
+          key: archiso-pacman-${{ runner.os }}-${{ hashFiles('.github/workflows/build-archiso.yml') }}
           restore-keys: |
+            archiso-pacman-${{ runner.os }}-
             archiso-pacman-
 
       - name: Configure pacman for optimal performance
@@ -45,27 +46,11 @@ jobs:
 
       - name: Install archiso and dependencies
         run: |
-          pacman -S --noconfirm archiso git
-
-      - name: Setup archiso profile cache
-        id: profile-cache
-        uses: actions/cache@v4
-        with:
-          path: /tmp/archiso-profile
-          key: archiso-profile-v1
-          restore-keys: |
-            archiso-profile-
+          pacman -S --needed --noconfirm archiso git
 
       - name: Copy archiso releng profile
         run: |
-          if [ -d /tmp/archiso-profile ]; then
-            echo "Using cached profile"
-            cp -r /tmp/archiso-profile /tmp/archiso
-          else
-            echo "Creating fresh profile"
-            cp -r /usr/share/archiso/configs/releng /tmp/archiso
-            cp -r /tmp/archiso /tmp/archiso-profile
-          fi
+          cp -r /usr/share/archiso/configs/releng /tmp/archiso
 
       - name: Build ISO
         run: |
