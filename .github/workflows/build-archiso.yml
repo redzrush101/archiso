@@ -79,8 +79,7 @@ jobs:
         run: |
           cp -r /usr/share/archiso/configs/releng /tmp/archiso
           sed -i '/edk2-shell/d' /tmp/archiso/packages.x86_64
-          sed -i "s/bootmodes=.*/bootmodes=('uefi-x64.systemd-boot.esp')/" /tmp/archiso/profiledef.sh
-          sed -i "s/airootfs_image_tool_options=.*/airootfs_image_tool_options=('-comp' 'zstd' '-Xcompression-level' '10' '-b' '1M' '-processors' '4')/" /tmp/archiso/profiledef.sh
+          sed -i 's/airootfs_image_tool_options=.*/airootfs_image_tool_options=("-comp" "zstd" "-Xcompression-level" "10" "-b" "1M" "-processors" "4")/' /tmp/archiso/profiledef.sh
 
       - name: Build ISO with optimizations
         run: |
